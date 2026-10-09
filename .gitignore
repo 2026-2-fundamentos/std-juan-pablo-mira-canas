@@ -222,3 +222,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+/P[0-9][0-9][0-9]_*/temp/*
+!/P[0-9][0-9][0-9]_*/temp/.gitkeep
+/L[0-9][0-9][0-9]_*/temp/*
+!/L[0-9][0-9][0-9]_*/temp/.gitkeep
