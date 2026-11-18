@@ -1,179 +1,227 @@
-import re
-import unicodedata
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
+ACTIVITY_DIR = Path(__file__).resolve().parents[1]
+INPUT_FILE = ACTIVITY_DIR / "data" / "ventas.csv"
+OUTPUT_FILE = ACTIVITY_DIR / "submission" / "ventas.csv"
 
-PROJECT_FOLDER = Path(__file__).resolve().parents[1]
-INPUT_FILE = PROJECT_FOLDER / "data" / "ventas.csv"
-OUTPUT_FILE = PROJECT_FOLDER / "submission" / "ventas.csv"
-
-COLUMNS = {
-    "supplier id": "supplier_id",
-    "supplier": "supplier",
-    "country": "country",
-    "city": "city",
-    "purchase date": "purchase_date",
-    "amount": "amount",
-    "discount": "discount",
-    "weight": "weight",
-    "units": "units",
-    "unit price": "unit_price",
-    "contact email": "contact_email",
+SUPPLIER_REPLACEMENTS = {
+    "amazon web services colombia": "Amazon Web Services Colombia",
+    "BANCOLOMBIA S.A.": "Bancolombia S.A.",
+    "Cementos Argos SA": "Cementos Argos S.A.",
+    "cementos argos s.a.": "Cementos Argos S.A.",
+    "Corona SAS": "Corona S.A.S.",
+    "Ecopetrol  S.A.": "Ecopetrol S.A.",
+    "GOOGLE COLOMBIA LTDA.": "Google Colombia Ltda.",
+    "Grupo  Éxito  S.A.": "Grupo Éxito S.A.",
+    "IBM Colombia SAS.": "IBM Colombia S.A.S.",
+    "ibm colombia s.a.s.": "IBM Colombia S.A.S.",
+    "MICROSOFT COLOMBIA INC.": "Microsoft Colombia Inc.",
+    "Nutresa SA": "Nutresa S.A.",
+    "nutresa s.a.": "Nutresa S.A.",
+    "oracle colombia ltda.": "Oracle Colombia Ltda.",
+    "POSTOBÓN S.A.": "Postobon S.A.",
+    "SAP Colombia SAS": "SAP Colombia S.A.S.",
+    "Schneider  Electric": "Schneider Electric",
+    "SIEMENS S.A.S.": "Siemens S.A.S.",
+    "siemens s.a.s.": "Siemens S.A.S.",
+    "Sura  S.A.": "Sura S.A.",
+    "Telefónica  Colombia": "Telefónica Colombia",
 }
 
-CITIES = {
-    "bogota": "Bogotá",
-    "medellin": "Medellín",
-    "sopo": "Sopó",
-    "tenjo": "Tenjo",
-}
 
-MISSING = {"", "N/A", "SIN CORREO"}
-
-
-def remove_accents(text):
-    """Quita las tildes de un texto."""
-    text = unicodedata.normalize("NFKD", text)
-    return "".join(char for char in text if not unicodedata.combining(char))
-
-
-def load_data(input_file):
-    """Lee el archivo crudo como texto y normaliza los encabezados."""
-    sales = pd.read_csv(
-        input_file,
-        dtype=str,
-        keep_default_na=False,
-        encoding="utf-8-sig",
+def clean_column_names(df):
+    df.columns = (
+        df.columns.str.strip()
+        .str.lower()
+        .str.replace(" ", "_")
     )
-    sales.columns = [COLUMNS[column.strip().lower()] for column in sales.columns]
-    sales = sales.apply(lambda column: column.str.strip())
-    return sales.mask(sales.apply(lambda column: column.str.upper().isin(MISSING)))
+    return df
 
 
-def clean_supplier(name):
-    """Unifica mayúsculas, espacios y sufijos societarios del proveedor."""
-    name = remove_accents(name).upper()
-    name = re.sub(r"\s+", " ", name)
-    name = re.sub(r"\bS\.?A\.?S\.?$", "S.A.S.", name)
-    name = re.sub(r"\bS\.?A\.?$", "S.A.", name)
-    name = re.sub(r"\bLTDA\.?$", "LTDA.", name)
-    name = re.sub(r"\bINC\.?$", "INC.", name)
-    return name
+def clean_supplier_column(df):
+    replacements = {
+        " ".join(key.split()).casefold(): value
+        for key, value in SUPPLIER_REPLACEMENTS.items()
+    }
+
+    def clean_value(value):
+        if pd.isna(value):
+            return value
+
+        normalized = " ".join(value.split())
+        key = normalized.casefold()
+
+        return replacements.get(key, normalized)
+
+    df["supplier"] = df["supplier"].map(clean_value)
+    return df
+
+def clean_country_column(df):
+    df["country"] = "COL"
+    return df
+
+def clean_city_column(df):
+    replacements = {
+        "bogotá": "Bogotá",
+        "medellin": "Medellín",
+        "medellín": "Medellín",
+        "sopó": "Sopó",
+        "tenjo": "Tenjo",
+    }
+
+    df["city"] = df["city"].apply(
+        lambda value: replacements.get(
+            value.strip().casefold(),
+            value.strip()
+        )
+        if isinstance(value, str)
+        else value
+    )
+
+    return df
 
 
-def clean_city(city):
-    """Asigna el nombre oficial de la ciudad."""
-    return CITIES[remove_accents(city).lower()]
+def clean_purchase_date_column(df):
+    def parse_date(value):
+        if pd.isna(value):
+            return value
+
+        value = str(value).strip()
+        if value[:4].isdigit() and len(value) >= 5 and value[4] in "-/.":
+            date = pd.to_datetime(value, format="mixed", errors="raise", yearfirst=True)
+
+        elif "-" in value and len(value.split("-")[-1]) == 2:
+            date = pd.to_datetime(value, format="%d-%m-%y", errors="raise")
+
+        elif "." in value:
+            date = pd.to_datetime(value, format="%d.%m.%Y", errors="raise")
+
+        elif "/" in value:
+            parts = value.split("/")
+            first, second, year = map(int, parts)
+
+            if first > 12:
+                date = pd.to_datetime(value, format="%d/%m/%Y", errors="raise")
+            elif second > 12:
+                date = pd.to_datetime(value, format="%m/%d/%Y", errors="raise")
+            else:
+                date = pd.to_datetime(value, format="%d/%m/%Y", errors="raise")
+        else:
+            raise ValueError(f"Fecha no reconocida: {value}")
+
+        return date.strftime("%Y-%m-%d")
+
+    df["purchase_date"] = df["purchase_date"].apply(parse_date)
+    return df
 
 
-def clean_date(date):
-    """Convierte las distintas notaciones de fecha a AAAA-MM-DD.
+def clean_amount_column(df):
+    def clean_amount(value):
+        if pd.isna(value):
+            return pd.NA
 
-    En las fechas con barra se asume día/mes (formato colombiano), salvo
-    cuando el segundo número es mayor que 12 y solo puede ser el día.
-    """
-    parts = [int(part) for part in re.split(r"[/.\-]", date)]
+        value = str(value).strip()
+        value = value.replace("COP", "").replace("$", "").strip()
 
-    if parts[0] > 31:
-        year, month, day = parts
-    else:
-        day, month, year = parts
-        if "/" in date and month > 12:
-            day, month = month, day
-        if year < 100:
-            year += 2000
+        if value.upper().endswith("K"):
+            number = float(value[:-1].strip())
+            return int(number * 1000)
 
-    return f"{year:04d}-{month:02d}-{day:02d}"
+        value = value.replace(",", "").replace(".", "")
 
+        return int(value)
 
-def parse_number(text):
-    """Convierte un valor monetario con separadores mixtos a número."""
-    if pd.isna(text):
-        return np.nan
+    df["amount"] = df["amount"].apply(clean_amount).astype("Int64")
+    return df
 
-    text = text.upper().replace("COP", "").replace("$", "").replace(" ", "")
-
-    multiplier = 1
-    if text.endswith("K"):
-        multiplier = 1000
-        text = text[:-1]
-
-    text = text.replace(",", "")
-    if text.count(".") > 1 or re.fullmatch(r"\d{1,3}\.\d{3}", text):
-        integer, _, decimals = text.rpartition(".")
-        if len(decimals) == 3:
-            integer, decimals = text, ""
-        text = integer.replace(".", "") + ("." + decimals if decimals else "")
-
-    return float(text) * multiplier
+def clean_discount_column(df):
+    def clean_discount(value):
+        if pd.isna(value):
+            return pd.NA
 
 
-def clean_discount(discount):
-    """Expresa el descuento como proporción entre 0 y 1."""
-    if pd.isna(discount):
-        return np.nan
+        value = str(value).strip()
 
-    value = float(discount.rstrip("%").strip())
-    if discount.endswith("%") or value > 1:
-        value /= 100
-    return value
+        # Si tiene %, convertir el porcentaje a decimal.
+        if value.endswith("%"):
+            return float(value[:-1].strip()) / 100
+        
+        number = float(value)
+        if number > 1 and number <= 100:
+            return number / 100
 
+        if 0 <= number <= 1:
+            return number
 
-def clean_weight(weight):
-    """Convierte el peso a kilogramos; sin unidad se asume kg."""
-    if pd.isna(weight):
-        return np.nan
+        raise ValueError(f"Descuento fuera de rango: {value}")
 
-    match = re.fullmatch(r"([\d.,]+)\s*(g|kg|ton)?", weight.lower())
-    value = float(match.group(1).replace(",", "."))
-    factor = {"g": 0.001, "kg": 1, "ton": 1000, None: 1}[match.group(2)]
-    return round(value * factor, 3)
+    df["discount"] = df["discount"].apply(clean_discount)
+    return df
 
 
-def fix_amounts(sales):
-    """Repara montos, unidades y precios usando amount = units * unit_price."""
-    sales["unit_price"] = sales["unit_price"].abs()
 
-    expected = sales["units"] * sales["unit_price"]
-    sales["amount"] = expected.where(expected.notna(), sales["amount"])
+def clean_weight_column(df):
+    def clean_weight(value):
+        if pd.isna(value):
+            return pd.NA
 
-    missing_units = sales["units"].isna()
-    sales.loc[missing_units, "units"] = (
-        sales.loc[missing_units, "amount"] / sales.loc[missing_units, "unit_price"]
-    ).round()
+        value = str(value).strip().lower()
 
-    return sales
+        if value.endswith("ton"):
+            number = float(value.replace("ton", "").strip())
+            return number * 1000
+
+        if value.endswith("kg"):
+            number = float(
+                value.replace("kg", "").strip().replace(",", ".")
+            )
+            return number
+
+        if value.endswith("g"):
+            number = float(value.replace("g", "").strip())
+            return number / 1000
+
+        # Si no tiene unidad, asumimos que el valor está en kg.
+        return float(value.replace(",", "."))
+
+    df["weight"] = df["weight"].apply(clean_weight)
+    return df
 
 
-def clean_sales(sales):
-    """Aplica todas las reglas de limpieza al dataframe crudo."""
-    sales["supplier_id"] = sales["supplier_id"].astype(int)
-    sales["supplier"] = sales["supplier"].map(clean_supplier)
-    sales["country"] = "COL"
-    sales["city"] = sales["city"].map(clean_city)
-    sales["purchase_date"] = sales["purchase_date"].map(clean_date)
-    sales["amount"] = sales["amount"].map(parse_number)
-    sales["discount"] = sales["discount"].map(clean_discount)
-    sales["weight"] = sales["weight"].map(clean_weight)
-    sales["units"] = pd.to_numeric(sales["units"])
-    sales["unit_price"] = sales["unit_price"].map(parse_number)
-    sales["contact_email"] = sales["contact_email"].str.lower()
+def clean_unit_price_column(df):
+    def clean_unit_price(value):
+        if pd.isna(value):
+            return pd.NA
 
-    sales = fix_amounts(sales)
-    sales["units"] = sales["units"].astype("Int64")
+        value = str(value).strip()
+        value = value.replace("$", "").replace(",", "")
+        integer_part, decimal_part = value.rsplit(".", 1)
+        integer_part = integer_part.replace(".", "")
 
-    return sales.drop_duplicates().sort_values("supplier_id").reset_index(drop=True)
+        normalized = f"{integer_part}.{decimal_part}"
+        return float(normalized)
+
+    df["unit_price"] = df["unit_price"].apply(clean_unit_price)
+    return df
 
 
 def main():
-    sales = load_data(INPUT_FILE)
-    sales = clean_sales(sales)
-    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    sales.to_csv(OUTPUT_FILE, index=False)
+    df = pd.read_csv(INPUT_FILE)
 
+    df = clean_column_names(df)
+    df = clean_supplier_column(df)
+    df = clean_country_column(df)
+    df = clean_city_column(df)
+    df = clean_purchase_date_column(df)
+    df = clean_amount_column(df)
+    df = clean_discount_column(df)
+    df = clean_weight_column(df)
+    df = clean_unit_price_column(df)
+
+    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(OUTPUT_FILE, index=False)
 
 if __name__ == "__main__":
     main()
